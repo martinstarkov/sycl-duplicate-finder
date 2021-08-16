@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// TODO: Figure out why hash for DHash and AHash is negative.
+
 #define LOG(x) { std::cout << x << std::endl; }
 
 const char* wndname = "Square Detection Demo";
@@ -83,7 +85,7 @@ Hash GetAHash(const cv::Mat& resized_image) {
         // Cycle through every column
         for (int x = 0; x < resized_image.cols; ++x) {
             if (ptr[x] > average) {
-                hash |= (std::int64_t)1 << i;
+                hash |= (Hash)1 << i;
             }
             i++; // increment hash index
         }
@@ -104,7 +106,7 @@ Hash GetDHash(const cv::Mat& resized_image) {
         for (int x = 0; x < resized_image.cols - 1; ++x) {
             // If the next pixel is brighter, make the hash contain a 1, else keep it as 0
             if (ptr[x + 1] > ptr[x]) {
-                hash |= (std::int64_t)1 << i;
+                hash |= (Hash)1 << i;
             }
             i++; // increment hash index
         }
@@ -164,9 +166,9 @@ std::vector<Hash> GetHashes(const std::vector<Path>& files) {
 
         auto greyscale{ ToGreyscale(image) };
         
-        auto thumbnail{ Resize(greyscale, 9, 8) };
+        auto thumbnail{ Resize(greyscale, 8, 8) };
         
-        hashes[i] = GetDHash(thumbnail);
+        hashes[i] = GetAHash(thumbnail);
 
         counter += 1;
         if (counter >= file_fraction) {
@@ -195,7 +197,7 @@ std::vector<Path> GetFiles(const std::vector<const char*>& directories) {
     return files;
 }
 
-int GetHammingDistance(Hash hash1, Hash hash2) {
+inline int GetHammingDistance(Hash hash1, Hash hash2) {
     Hash x{ hash1 ^ hash2 }; // XOR (get differences)
     int hamming_distance{ 0 };
     while (x > 0) {
@@ -230,11 +232,13 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, int hamming_threshold
     queue.submit([&](cl::sycl::handler& cgh) {
         auto destination_a = destination_b.template get_access<cl::sycl::access::mode::write>(cgh);
         auto hash_a = hash_b.template get_access<cl::sycl::access::mode::read>(cgh);
+        auto os = sycl::stream{ 50000, 4000, cgh };
         auto kernel = [=](cl::sycl::id<1> id) {
             auto i{ id.get(0) };
             for (auto j{ 0 }; j < i; ++j) {
-                auto hamming_distance{ GetHammingDistance(hash_a[id], hash_a[j]) };
-                if (hamming_distance <= hamming_threshold) {
+                auto hamming_distance{ GetHammingDistance(hash_a[i], hash_a[j]) };
+                //os << hamming_distance << ": " << hash_a[i] << "," << hash_a[j] << "\n";
+                if (hamming_distance == 0) {
                     //int similarity{ static_cast<int>(1.0 - static_cast<double>(hamming_distance) / (static_cast<double>(hamming_threshold) + 1.0) * 100.0) };
                     auto index{ i - 1 + j };
                     destination_a[index] = 1;
@@ -243,6 +247,7 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, int hamming_threshold
         };
         cgh.parallel_for<class find_similar_images>(hash_range, kernel);
     });
+    queue.wait();
     //for (const auto& file1 : hashes) {
     //    for (const auto& file2 : hashes) {
     //        if (file1 != file2) {
@@ -266,7 +271,7 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, int hamming_threshold
 
 int main(int argc, char** argv) {
 
-    auto files{ GetFiles({ "../vizsla_154/", "../maltese_252/", "../vizsla_4048/" }) };
+    auto files{ GetFiles({ "../vizsla_154/"}) };//, "../maltese_252/", "../vizsla_4048/" }) };
     //auto files{ GetFiles({ "../test/" }) };
     auto hashes{ GetHashes(files) };
     auto pairs{ ProcessDuplicates(hashes, 0) };
