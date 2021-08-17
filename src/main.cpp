@@ -24,7 +24,7 @@
 
 const char* wndname = "Square Detection Demo";
 
-using Hash = std::int64_t;
+using Hash = std::uint64_t;
 using Path = std::filesystem::path;
 
 enum class FileType {
@@ -115,6 +115,10 @@ Hash GetDHash(const cv::Mat& resized_image) {
     return hash;
 }
 
+inline std::uint64_t GetLinearIndex(std::size_t hash_count, std::uint64_t i, std::uint64_t j) {
+    return hash_count * (hash_count - 1) / 2 - (hash_count - j) * ((hash_count - j) - 1) / 2 + i - j - 1;
+}
+
 cv::Mat Resize(const cv::Mat& image, int width, int height) {
     cv::Mat resized_image;
     cv::resize(image, resized_image, { width, height });
@@ -197,14 +201,8 @@ std::vector<Path> GetFiles(const std::vector<const char*>& directories) {
     return files;
 }
 
-inline int GetHammingDistance(Hash hash1, Hash hash2) {
-    Hash x{ hash1 ^ hash2 }; // XOR (get differences)
-    int hamming_distance{ 0 };
-    while (x > 0) {
-        hamming_distance += x & 1; // (count differences)
-        x >>= 1;
-    }
-    return hamming_distance;
+inline std::uint64_t GetHammingDistance(Hash hash1, Hash hash2) {
+    return sycl::popcount(hash1 ^ hash2); // XOR (get number of 1 bits in the difference of 1 and 2).
 }
 
 using Pair = std::uint8_t;
@@ -220,34 +218,53 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, int hamming_threshold
     cl::sycl::property_list properties{ cl::sycl::property::buffer::use_host_ptr {} };
 
     cl::sycl::range<1> hash_range{ hash_count };
+
+    std::size_t pair_count{ hash_count * (hash_count - 1) / 2 };
+
+    cl::sycl::range<1> destination_range{ pair_count };
     
     PairContainer pairs;
-    pairs.resize(hash_count * hash_count / 2 - hash_count, 0);
-
+    pairs.resize(pair_count, 0);
+    {
     cl::sycl::buffer<Hash, 1> hash_b{ hashes, properties };
     cl::sycl::buffer<Pair, 1> destination_b{ pairs, properties };
 
     cl::sycl::queue queue;
 
+    LOG("PreHashes [i=4, j=1]: [" << hashes[4] << ", " << hashes[1] << "]");
+    auto debug_index = GetLinearIndex(hash_count, 4, 1);
+    LOG("PrePair is: " << debug_index << ":" << unsigned(pairs[debug_index]));
+    LOG("PreHamming: " << GetHammingDistance(hashes[4], hashes[1]));
+
     queue.submit([&](cl::sycl::handler& cgh) {
-        auto destination_a = destination_b.template get_access<cl::sycl::access::mode::write>(cgh);
+        auto destination_a = destination_b.template get_access<cl::sycl::access::mode::read_write>(cgh);
         auto hash_a = hash_b.template get_access<cl::sycl::access::mode::read>(cgh);
         auto os = sycl::stream{ 50000, 4000, cgh };
         auto kernel = [=](cl::sycl::id<1> id) {
             auto i{ id.get(0) };
             for (auto j{ 0 }; j < i; ++j) {
+                auto index = GetLinearIndex(hash_count, i, j);
                 auto hamming_distance{ GetHammingDistance(hash_a[i], hash_a[j]) };
-                //os << hamming_distance << ": " << hash_a[i] << "," << hash_a[j] << "\n";
+                if (i == 4 && j == 1) {
+                    os << "DuringPreHashes [i=4, j=1]: [" << hash_a[i] << ", " << hash_a[j] << "]" << "\n";
+                    os << "DuringPrePair is: " << index << ":" << destination_a[index] << "\n";
+                    os << "DuringHamming: " << hamming_distance << "\n";
+                }
                 if (hamming_distance == 0) {
-                    //int similarity{ static_cast<int>(1.0 - static_cast<double>(hamming_distance) / (static_cast<double>(hamming_threshold) + 1.0) * 100.0) };
-                    auto index{ i - 1 + j };
                     destination_a[index] = 1;
+                    //int similarity{ static_cast<int>(1.0 - static_cast<double>(hamming_distance) / (static_cast<double>(hamming_threshold) + 1.0) * 100.0) };
+                    
+                }
+                if (i == 4 && j == 1) {
+                    os << "DuringPostHashes [i=4, j=1]: [" << hash_a[i] << ", " << hash_a[j] << "]" << "\n";
+                    os << "DuringPostPair is: " << index << ":" << destination_a[index] << "\n";
                 }
             }
         };
         cgh.parallel_for<class find_similar_images>(hash_range, kernel);
     });
     queue.wait();
+    }
     //for (const auto& file1 : hashes) {
     //    for (const auto& file2 : hashes) {
     //        if (file1 != file2) {
@@ -277,12 +294,13 @@ int main(int argc, char** argv) {
     auto pairs{ ProcessDuplicates(hashes, 0) };
 
     cv::Size window{ 800, 400 };
+    auto hash_count{ hashes.size() };
 
-    for (auto i{ 0 }; i < hashes.size(); ++i) {
+    for (auto i{ 0 }; i < hash_count; ++i) {
         for (auto j{ 0 }; j < i; ++j) {
-            auto index{ i - 1 + j };
+            auto index = GetLinearIndex(hash_count, i, j);
             if (pairs[index] == 1) {
-                LOG("Duplicates: [" << i << ", " << j << "]");
+                auto h = GetHammingDistance(hashes[i], hashes[j]);
                 assert(i < files.size());
                 assert(j < files.size());
                 std::array<cv::Mat, 2> images{
