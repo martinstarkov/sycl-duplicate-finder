@@ -205,7 +205,7 @@ inline std::uint64_t GetHammingDistance(Hash hash1, Hash hash2) {
     return sycl::popcount(hash1 ^ hash2); // XOR (get number of 1 bits in the difference of 1 and 2).
 }
 
-using Pair = std::uint64_t;
+using Pair = std::pair<std::uint64_t, std::uint64_t>;
 using PairContainer = std::vector<Pair>;
 
 PairContainer ProcessDuplicates(std::vector<Hash>& hashes, std::uint64_t hamming_threshold) {
@@ -215,29 +215,29 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, std::uint64_t hamming
     std::size_t counter{ 0 };
     std::size_t file_fraction{ size / static_cast<std::size_t>(100) };
     std::size_t loading{ 1 };
+    cl::sycl::property_list properties{ cl::sycl::property::buffer::use_host_ptr {} };
+
+    cl::sycl::range<1> hash_range{ size };
 
     PairContainer pairs;
-    pairs.resize(size * hamming_threshold, size);
 
-    cl::sycl::property_list properties{ cl::sycl::property::buffer::use_host_ptr {} };
-    cl::sycl::range<2> hash_range{ size, hamming_threshold };
+    pairs.resize(size, { size, 0 });
+
     cl::sycl::queue queue;
 
     {
         cl::sycl::buffer<Hash, 1> hash_b{ hashes, properties };
-        cl::sycl::buffer<Pair, 2> destination_b{ pairs, properties };
+        cl::sycl::buffer<Pair, 1> destination_b{ pairs, properties };
 
         queue.submit([&](cl::sycl::handler& cgh) {
             auto destination_a = destination_b.template get_access<cl::sycl::access::mode::write>(cgh);
             auto hash_a = hash_b.template get_access<cl::sycl::access::mode::read>(cgh);
-            cl::sycl::stream os{ 4000, 4000, cgh };
-            auto kernel = [=](sycl::id<2> id) {
+            auto kernel = [=](sycl::id<1> id) {
                 const std::size_t i{ id.get(0) };
-                const std::size_t threshold{ id.get(1) };
                 for (auto j{ i + 1 }; j < size; ++j) {
                     auto hamming_distance = GetHammingDistance(hash_a[i], hash_a[j]);
-                    if (hamming_distance == threshold) {
-                        destination_a[i][threshold] = j;
+                    if (hamming_distance <= hamming_threshold) {
+                        destination_a[i] = { j, hamming_distance };
                         return;
                     }
                 }
@@ -272,50 +272,32 @@ int main(int argc, char** argv) {
     auto files{ GetFiles({ "../vizsla_154/"}) };//, "../maltese_252/", "../vizsla_4048/" }) };
     //auto files{ GetFiles({ "../test/" }) };
     auto hashes{ GetHashes(files) };
-
-    std::uint64_t hamming_threshold{ 1 };
-
-    auto pairs{ ProcessDuplicates(hashes, hamming_threshold) };
+    auto pairs{ ProcessDuplicates(hashes, 0) };
 
     cv::Size window{ 800, 400 };
     auto size{ hashes.size() };
 
-    for (auto i = 0; i < size; ++i) {
-        for (auto h = 0; h < hamming_threshold; ++h) {
-            auto a = h * size;
-            auto pair = i;
-            while (pairs[pair + a] != size) {
-                auto next_pair{ pairs[pair + a] };
-                LOG("First: " << pair << ", Second: " << next_pair);
-                assert(pair < files.size());
-                assert(next_pair < files.size());
-                LOG(files[pair] << ", " << files[next_pair]);
-                std::array<cv::Mat, 2> images{
-                       Resize(GetImage(files[pair]), window.width / 2, window.height),
-                       Resize(GetImage(files[next_pair]), window.width / 2, window.height)
-                };
-                std::string name = "Similarity: " + std::to_string(h);
-                cv::Mat concatenated;
-                // Concatenate duplicates images into one big image
-                cv::hconcat(images.data(), 2, concatenated);
-                cv::imshow(name, concatenated);
-                cv::waitKey(0);
-                cv::destroyAllWindows();
-                pair = next_pair;
-            }
+    for (auto i{ 0 }; i < size; ++i) {
+        auto pair{ i };
+        while (pairs[pair].first != size) {
+            auto next_pair{ pairs[pair] };
+            LOG(files[pair] << ", " << files[next_pair.first]);
+            std::array<cv::Mat, 2> images{
+                   Resize(GetImage(files[pair]), window.width / 2, window.height),
+                   Resize(GetImage(files[next_pair.first]), window.width / 2, window.height)
+            };
+            std::string name = "Similarity: " + std::to_string(next_pair.second);
+            cv::Mat concatenated;
+            // Concatenate duplicates images into one big image
+            cv::hconcat(images.data(), 2, concatenated);
+            cv::imshow(name, concatenated);
+            cv::waitKey(0);
+            cv::destroyAllWindows();
+            pair = next_pair.first;
         }
     }
 
-    /*for (auto i{ 0 }; i < size; ++i) {
-        auto h = (hamming_threshold + 1);
-        for (auto hn{ 0 }; hn < h; ++hn) {
-            auto pair = pairs[i * h + hn];
-            while (pair != size) {
-                
-            }
-        }
-    }
-     */ 
+        
     
 
     //for (const auto& pair : pairs) {
