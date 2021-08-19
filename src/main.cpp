@@ -258,6 +258,21 @@ int main(int argc, char** argv) {
                     Resize(GetImage(files[i]), window.width / 2, window.height),
                     Resize(GetImage(files[j]), window.width / 2, window.height)
                 };
+                auto pixels = 30;
+                cv::Mat src = images[0];
+                LOG("src: " << src.rows << ", " << src.cols);
+                cv::Mat dest = src;
+                LOG("dest: " << dest.rows << ", " << dest.cols);
+                cv::Rect rect{ 0, 0, src.cols, src.rows };
+                cv::rectangle(dest, rect, cv::Scalar{ 0, 255, 0 });
+                LOG("dest colored: " << dest.rows << ", " << dest.cols);
+                cv::Rect inner_rectangle{ pixels, pixels, src.cols - pixels * 2, src.rows - pixels * 2 };
+                LOG("inner_rectangle: " << inner_rectangle.height << ", " << inner_rectangle.width);
+                src(inner_rectangle).copyTo(dest(inner_rectangle));
+                LOG("dest: " << dest.rows << ", " << dest.cols);
+                LOG("images[0]: " << images[0].rows << ", " << images[0].cols);
+                images[0] = dest;
+
                 cv::Mat concatenated;
                 // Concatenate duplicates images into one big image
                 cv::hconcat(images.data(), 2, concatenated);
