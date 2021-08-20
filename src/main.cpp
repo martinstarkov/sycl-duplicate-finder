@@ -29,21 +29,24 @@ enum class FileType {
     HEIC = 2
 };
 
-FileType GetFileType(const Path& path) {
-    auto extension{ path.extension().string() };
-    if (extension == ".jpg" ||
-        extension == ".png" ||
-        extension == ".jpeg" ||
-        extension == ".bmp") {
+FileType GetType(const Path& extension) {
+    if (extension.compare(".jpg") == 0 || extension.compare(".JPG") == 0) {
         return FileType::PICTURE;
-    } else if (extension == ".mov" ||
-               extension == ".mp4" ||
-               extension == ".wmv" ||
-               extension == ".gif" ||
-               extension == ".avi") {
+    } else if (extension.compare(".mov") == 0 || extension.compare(".MOV") == 0) {
         return FileType::VIDEO;
-    } else if (extension == ".heic" ||
-               extension == ".heif") {
+    } else if (extension.compare(".heic") == 0 || extension.compare(".HEIC") == 0) {
+        return FileType::HEIC;
+    } else if (extension.compare(".png") == 0 || extension.compare(".PNG") == 0 ||
+               extension.compare(".jpeg") == 0 || extension.compare(".JPEG") == 0) {
+        return FileType::PICTURE;
+    } else if (extension.compare(".mp4") == 0 || extension.compare(".MP4") == 0 ||
+               extension.compare(".wmv") == 0 || extension.compare(".WMV") == 0 ||
+               extension.compare(".gif") == 0 || extension.compare(".GIF") == 0 ||
+               extension.compare(".avi") == 0 || extension.compare(".AVI") == 0) {
+        return FileType::VIDEO;
+    } else if (extension.compare(".bmp") == 0 || extension.compare(".BMP") == 0) {
+        return FileType::PICTURE;
+    } else if (extension.compare(".heif") == 0 || extension.compare(".HEIF") == 0) {
         return FileType::HEIC;
     } else {
         return FileType::UNKNOWN;
@@ -51,15 +54,11 @@ FileType GetFileType(const Path& path) {
 }
 
 struct File {
-    File(Hash hash, const Path& path) : hash{ hash }, path{ path } {}
-    Hash hash{ 0 };
+    File(const cv::Mat& image, const Path& path, bool flag) : image{ image }, original_image{ image }, path{ path }, flag{ flag } {}
+    cv::Mat image;
+    cv::Mat original_image;
     Path path;
-    bool operator==(const File& other) const {
-        return path == other.path;
-    }
-    bool operator!=(const File& other) const {
-        return !operator==(other);
-    }
+    bool flag;
 };
 
 Hash GetAHash(const cv::Mat& resized_image) {
@@ -116,9 +115,18 @@ inline std::uint64_t GetLinearIndex(std::size_t hash_count, std::uint64_t i, std
 }
 
 cv::Mat Resize(const cv::Mat& image, int width, int height) {
-    cv::Mat resized_image;
-    cv::resize(image, resized_image, { width, height });
-    return resized_image;
+    cv::Mat resized;
+    cv::resize(image, resized, { width, height });
+    return resized;
+}
+
+void AddBorder(cv::Mat& image, int size, const cv::Scalar& color) {
+    cv::Rect inner_rectangle{ size, size, image.cols - size * 2, image.rows - size * 2 };
+    cv::Mat border;
+    border.create(image.rows, image.cols, image.type());
+    border.setTo(color);
+    image(inner_rectangle).copyTo(border(inner_rectangle));
+    image = border;
 }
 
 cv::Mat ToGreyscale(const cv::Mat& image) {
@@ -127,12 +135,33 @@ cv::Mat ToGreyscale(const cv::Mat& image) {
     return greyscale;
 }
 
-cv::Mat GetImage(const Path& path) {
-    switch (GetFileType(path)) {
+inline cv::Mat GetGreyImage(const Path& path) {
+    switch (GetType(path.extension())) {
         case FileType::PICTURE:
         {
-            cv::Mat image{ cv::imread(path.generic_string()) };
-            return image;
+            return cv::imread(path.generic_string(), cv::IMREAD_GRAYSCALE);
+        }
+        case FileType::VIDEO:
+        {
+
+            return {};
+        }
+        case FileType::HEIC:
+        {
+
+            return {};
+        }
+        case FileType::UNKNOWN:
+            return {};
+    }
+    return {};
+}
+
+cv::Mat GetImage(const Path& path) {
+    switch (GetType(path.extension())) {
+        case FileType::PICTURE:
+        {
+            return cv::imread(path.generic_string());
         }
         case FileType::VIDEO:
         {
@@ -158,15 +187,18 @@ std::vector<Hash> GetHashes(const std::vector<Path>& files) {
     std::vector<Hash> hashes;
     hashes.resize(file_count, 0);
 
+    std::size_t percent{ file_count / 100 };
+    
     for (auto i{ 0 }; i < file_count; ++i) {
         const auto& path{ files[i] };
-        auto image{ GetImage(path) };
-
-        auto greyscale{ ToGreyscale(image) };
-        
-        auto thumbnail{ Resize(greyscale, 8, 8) };
-        
-        hashes[i] = GetAHash(thumbnail);
+        auto image{ GetGreyImage(path) };
+        if (!image.empty()) {
+            auto thumbnail{ Resize(image, 8, 8) };
+            hashes[i] = GetAHash(thumbnail);
+        }
+        if (i % percent == 0) {
+            LOG("[" << i / percent << "% of files hashed]");
+        }
     }
     
     LOG("[Finished hashing all files]");
@@ -239,48 +271,47 @@ PairContainer ProcessDuplicates(std::vector<Hash>& hashes, int hamming_threshold
 
 int main(int argc, char** argv) {
 
-    auto files{ GetFiles({ "../vizsla_154/"}) };//, "../maltese_252/", "../vizsla_4048/" }) };
+    //auto files{ GetFiles({ "../vizsla_154/"}) };//, "../maltese_252/", "../vizsla_4048/" }) };
     //auto files{ GetFiles({ "../test/" }) };
+    auto files{ GetFiles({ "D:/Media/All" }) };
     auto hashes{ GetHashes(files) };
     auto pairs{ ProcessDuplicates(hashes, 0) };
 
     cv::Size window{ 800, 400 };
     auto hash_count{ hashes.size() };
 
+    LOG("[Displaying duplicate pairs]");
+
     for (auto i{ 0 }; i < hash_count; ++i) {
         for (auto j{ 0 }; j < i; ++j) {
             auto index = GetLinearIndex(hash_count, i, j);
-            if (pairs[index] > 0) {
-                auto h = GetHammingDistance(hashes[i], hashes[j]);
+            auto hamming_distance = pairs[index] - 1;
+            if (hamming_distance >= 0) {
                 assert(i < files.size());
                 assert(j < files.size());
-                std::array<cv::Mat, 2> images{
-                    Resize(GetImage(files[i]), window.width / 2, window.height),
-                    Resize(GetImage(files[j]), window.width / 2, window.height)
-                };
-                auto pixels = 30;
-                cv::Mat src = images[0];
-                LOG("src: " << src.rows << ", " << src.cols);
-                cv::Mat dest = src;
-                LOG("dest: " << dest.rows << ", " << dest.cols);
-                cv::Rect rect{ 0, 0, src.cols, src.rows };
-                cv::rectangle(dest, rect, cv::Scalar{ 0, 255, 0 });
-                LOG("dest colored: " << dest.rows << ", " << dest.cols);
-                cv::Rect inner_rectangle{ pixels, pixels, src.cols - pixels * 2, src.rows - pixels * 2 };
-                LOG("inner_rectangle: " << inner_rectangle.height << ", " << inner_rectangle.width);
-                src(inner_rectangle).copyTo(dest(inner_rectangle));
-                LOG("dest: " << dest.rows << ", " << dest.cols);
-                LOG("images[0]: " << images[0].rows << ", " << images[0].cols);
-                images[0] = dest;
+                auto image1 = GetImage(files[i]);
+                auto image2 = GetImage(files[i]);
+                if (!image1.empty() && !image2.empty()) {
+                    LOG("[" << (int)(index / pairs.size() * 100) << "% of files displayed]");
+                    std::array<File, 2> images{
+                        File(Resize(image1, window.width / 2, window.height), files[i], false),
+                        File(Resize(image2, window.width / 2, window.height), files[j], true),
+                    };
 
-                cv::Mat concatenated;
-                // Concatenate duplicates images into one big image
-                cv::hconcat(images.data(), 2, concatenated);
-                cv::imshow("Duplicate Finder", concatenated);
-                cv::waitKey(0);
+                    AddBorder(images[0].image, 10, { 0, 255, 0 });
+                
+                    cv::Mat concatenated;
+                    // Concatenate duplicates images into one big image
+                    std::array<cv::Mat, 2> matrixes{ images[0].image, images[1].image };
+                    cv::hconcat(matrixes.data(), 2, concatenated);
+                    cv::imshow("Duplicate Finder", concatenated);
+                    cv::waitKey(0);
+                }
             }
         }
     }
+
+    LOG("[Finished displaying duplicate pairs]");
 
     cv::destroyAllWindows();
 }
